@@ -51,6 +51,24 @@ setting once (MangaHop will pop up and tell you this if it's missing):
     safari:                 Settings > Advanced > Show Develop menu,
                             then Develop > Allow JavaScript from Apple Events
 
+## Popup closing
+
+Also on by default ("Close popup tabs" in the menu): while you're on a manga
+chapter page, any new tab that opens onto a domain none of your other tabs
+use gets closed within about a second. That's the popunder trick these sites
+pull when you click anywhere on the page.
+
+It's careful about what counts as unwanted. Tabs you open yourself are fine —
+the new tab page, cmd+clicking a chapter link (same site, so it's kept),
+switching tabs. It only guards at all while the tab you were on looks like a
+manga chapter, so a random tab opening while you're elsewhere is none of its
+business. One thing it can't catch: a site redirecting the tab you're
+currently reading, since that looks identical to you clicking a link — but if
+you hop with the hotkey you never click anything, so those don't happen.
+
+Chromium browsers only (Chrome, Brave, Edge, Arc, Vivaldi) — Safari doesn't
+expose what's needed.
+
 ## How it finds the chapter
 
 Most of these sites run the same handful of stacks, so the URLs are

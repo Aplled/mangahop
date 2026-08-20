@@ -12,6 +12,7 @@ struct Config: Codable {
     var next = "ctrl+cmd+right"
     var prev = "ctrl+cmd+left"
     var zapAds = true
+    var closePopups = true
     var rules: [SiteRule] = []
 
     init() {}
@@ -20,6 +21,7 @@ struct Config: Codable {
         next = (try? c.decode(String.self, forKey: .next)) ?? next
         prev = (try? c.decode(String.self, forKey: .prev)) ?? prev
         zapAds = (try? c.decode(Bool.self, forKey: .zapAds)) ?? zapAds
+        closePopups = (try? c.decode(Bool.self, forKey: .closePopups)) ?? closePopups
         rules = (try? c.decode([SiteRule].self, forKey: .rules)) ?? []
     }
 }
@@ -224,6 +226,55 @@ let zapJS = "(function(){if(window.__mangahop)return;window.__mangahop=1;"
     + "var r=n.getBoundingClientRect();if(r.width*r.height>area*0.3)n.remove()});"
     + "};kill();var t=0,iv=setInterval(function(){kill();if(++t>15)clearInterval(iv)},1000)})()"
 
+// tab list for the popup guard. chromium browsers only — safari has no tab ids.
+func listTabs(_ b: BrowserApp) -> (active: String, tabs: [(id: Int, url: String)])? {
+    guard !b.isSafari else { return nil }
+    let src = """
+    tell application "\(b.appName)"
+        set out to ""
+        set fu to ""
+        if (count of windows) > 0 then set fu to URL of active tab of front window
+        repeat with w in windows
+            repeat with t in tabs of w
+                set out to out & (id of t) & "|" & (URL of t) & linefeed
+            end repeat
+        end repeat
+        return fu & linefeed & out
+    end tell
+    """
+    guard let raw = applescript(src) else { return nil }
+    var lines = raw.components(separatedBy: "\n")
+    guard !lines.isEmpty else { return nil }
+    let active = lines.removeFirst()
+    var tabs: [(id: Int, url: String)] = []
+    for line in lines {
+        guard let bar = line.firstIndex(of: "|"), let id = Int(line[..<bar]) else { continue }
+        tabs.append((id, String(line[line.index(after: bar)...])))
+    }
+    return (active, tabs)
+}
+
+func closeTab(_ b: BrowserApp, id: Int) {
+    let src = """
+    tell application "\(b.appName)"
+        repeat with w in windows
+            repeat with t in tabs of w
+                if (id of t) is \(id) then
+                    close t
+                    return "ok"
+                end if
+            end repeat
+        end repeat
+    end tell
+    """
+    _ = applescript(src)
+}
+
+func rootDomain(_ host: String) -> String {
+    let parts = host.split(separator: ".")
+    return parts.count < 2 ? host : parts.suffix(2).joined(separator: ".")
+}
+
 func injectZap(_ b: BrowserApp) -> Bool {
     let esc = zapJS.replacingOccurrences(of: "\\", with: "\\\\")
                    .replacingOccurrences(of: "\"", with: "\\\"")
@@ -316,6 +367,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }, 1, &spec, nil, nil)
 
         registerHotkeys()
+
+        guardTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: true) { [weak self] _ in
+            self?.tabGuardTick()
+        }
+    }
+
+    // popup guard. every tick, any brand-new tab pointing at a domain that
+    // none of the existing tabs use gets closed — but only while the tab the
+    // user is reading looks like a manga chapter. tabs the user opens
+    // themselves (new-tab page, same-site links) are left alone. a tab with
+    // no real url yet (popups start as about:blank) is judged on a later
+    // tick once it has one.
+    var guardTimer: Timer?
+    var seenTabs: Set<Int> = []
+    var lastActive = ""
+    var guardBrowser = ""
+
+    func tabGuardTick() {
+        guard config.closePopups, recording == nil,
+              let b = activeBrowser(), !b.isSafari,
+              let snap = listTabs(b) else {
+            guardBrowser = ""
+            return
+        }
+        let current = Set(snap.tabs.map { $0.id })
+        if guardBrowser != b.bundleID {
+            guardBrowser = b.bundleID
+            seenTabs = current
+            lastActive = snap.active
+            return
+        }
+        seenTabs.formIntersection(current)
+
+        let onChapter = chapterToken(in: snap.active, config: config) != nil
+                     || chapterToken(in: lastActive, config: config) != nil
+        let openRoots = Set(snap.tabs.compactMap { t -> String? in
+            guard seenTabs.contains(t.id), let h = URLComponents(string: t.url)?.host else { return nil }
+            return rootDomain(h)
+        })
+
+        for t in snap.tabs where !seenTabs.contains(t.id) {
+            if t.url.isEmpty || t.url == "about:blank" || t.url == "missing value" { continue }
+            guard let comps = URLComponents(string: t.url), let scheme = comps.scheme,
+                  scheme == "http" || scheme == "https", let host = comps.host else {
+                seenTabs.insert(t.id)  // chrome://newtab and friends — the user's own tab
+                continue
+            }
+            if onChapter && !openRoots.contains(rootDomain(host)) {
+                NSLog("MangaHop: closing popup tab \(t.url)")
+                closeTab(b, id: t.id)
+            }
+            seenTabs.insert(t.id)
+        }
+        lastActive = snap.active
     }
 
     func registerHotkeys() {
@@ -346,6 +451,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         zap.target = self
         zap.state = config.zapAds ? .on : .off
         menu.addItem(zap)
+        let pop = NSMenuItem(title: "Close popup tabs", action: #selector(togglePopups), keyEquivalent: "")
+        pop.target = self
+        pop.state = config.closePopups ? .on : .off
+        menu.addItem(pop)
         let prefs = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         prefs.target = self
         menu.addItem(prefs)
@@ -369,6 +478,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     @objc func toggleZap() {
         config.zapAds.toggle()
         saveConfig(config)
+        rebuildMenu()
+    }
+
+    @objc func togglePopups() {
+        config.closePopups.toggle()
+        saveConfig(config)
+        guardBrowser = ""  // re-snapshot instead of judging tabs opened while off
         rebuildMenu()
     }
 
