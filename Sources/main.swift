@@ -11,6 +11,7 @@ struct SiteRule: Codable {
 struct Config: Codable {
     var next = "ctrl+cmd+right"
     var prev = "ctrl+cmd+left"
+    var zapAds = true
     var rules: [SiteRule] = []
 
     init() {}
@@ -18,6 +19,7 @@ struct Config: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         next = (try? c.decode(String.self, forKey: .next)) ?? next
         prev = (try? c.decode(String.self, forKey: .prev)) ?? prev
+        zapAds = (try? c.decode(Bool.self, forKey: .zapAds)) ?? zapAds
         rules = (try? c.decode([SiteRule].self, forKey: .rules)) ?? []
     }
 }
@@ -207,6 +209,30 @@ func setTabURL(_ b: BrowserApp, _ url: String) -> Bool {
     return applescript(src) != nil
 }
 
+// runs in the page after each hop: kills popunders, cross-origin ad iframes
+// and full-screen overlays. cosmetic cleanup, not a network-level blocker.
+let zapJS = "(function(){if(window.__mangahop)return;window.__mangahop=1;"
+    + "try{window.open=function(){return null}}catch(e){}"
+    + "var kill=function(){"
+    + "document.querySelectorAll('ins.adsbygoogle,[id^=google_ads],[class*=adsbox]').forEach(function(n){n.remove()});"
+    + "document.querySelectorAll('iframe').forEach(function(f){try{var u=new URL(f.src,location.href);"
+    + "if(u.host&&u.host!==location.host&&!/youtube|vimeo|disqus|recaptcha/.test(u.host))f.remove()}catch(e){}});"
+    + "var area=innerWidth*innerHeight;"
+    + "document.querySelectorAll('body > *, body > * > *').forEach(function(n){"
+    + "if(n.tagName==='IMG'||n.tagName==='CANVAS')return;"
+    + "var s=getComputedStyle(n);if(s.position!=='fixed'||(parseInt(s.zIndex)||0)<1000)return;"
+    + "var r=n.getBoundingClientRect();if(r.width*r.height>area*0.3)n.remove()});"
+    + "};kill();var t=0,iv=setInterval(function(){kill();if(++t>15)clearInterval(iv)},1000)})()"
+
+func injectZap(_ b: BrowserApp) -> Bool {
+    let esc = zapJS.replacingOccurrences(of: "\\", with: "\\\\")
+                   .replacingOccurrences(of: "\"", with: "\\\"")
+    let src = b.isSafari
+        ? "tell application \"Safari\" to do JavaScript \"\(esc)\" in front document"
+        : "tell application \"\(b.appName)\" to execute active tab of front window javascript \"\(esc)\""
+    return applescript(src) != nil
+}
+
 // app
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
@@ -272,6 +298,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             menu.addItem(item)
         }
         menu.addItem(.separator())
+        let zap = NSMenuItem(title: "Zap ads after hopping", action: #selector(toggleZap), keyEquivalent: "")
+        zap.target = self
+        zap.state = config.zapAds ? .on : .off
+        menu.addItem(zap)
         let prefs = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         prefs.target = self
         menu.addItem(prefs)
@@ -286,10 +316,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
               let newURL = shiftedChapterURL(url, delta: delta, config: config),
               setTabURL(b, newURL)
         else { NSSound.beep(); return }
+        if config.zapAds { scheduleZap(b) }
     }
 
     @objc func nextChapter() { navigate(1) }
     @objc func prevChapter() { navigate(-1) }
+
+    @objc func toggleZap() {
+        config.zapAds.toggle()
+        saveConfig(config)
+        rebuildMenu()
+    }
+
+    var hintShown = false
+
+    // inject a few times while the page loads; the js loops for 15s on its own
+    func scheduleZap(_ b: BrowserApp) {
+        var fails = 0
+        for (i, delay) in [1.5, 4.0, 8.0].enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self, self.config.zapAds else { return }
+                if !injectZap(b) { fails += 1 }
+                if i == 2 && fails == 3 { self.showZapHint(b) }
+            }
+        }
+    }
+
+    func showZapHint(_ b: BrowserApp) {
+        guard !hintShown else { return }
+        hintShown = true
+        let alert = NSAlert()
+        alert.messageText = "Ad zapping needs one browser setting"
+        alert.informativeText = b.isSafari
+            ? "In Safari: Settings → Advanced → Show Develop menu, then Develop → Allow JavaScript from Apple Events.\n\nOr turn off \"Zap ads after hopping\" in the MangaHop menu."
+            : "In \(b.appName): View → Developer → Allow JavaScript from Apple Events.\n\nOr turn off \"Zap ads after hopping\" in the MangaHop menu."
+        alert.runModal()
+    }
 
     // settings window
 

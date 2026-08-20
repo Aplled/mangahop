@@ -33,6 +33,22 @@ ctrl+cmd+right for next, ctrl+cmd+left for previous. To change them open
 Settings from the menu bar icon, click the hotkey button and press the new
 combo.
 
+## Ad zapping
+
+On by default, toggle it from the menu bar icon ("Zap ads after hopping").
+After each hop it injects a small script into the tab that disables
+window.open (that's what popunders use), removes cross-origin ad iframes and
+deletes full-screen overlays. To be clear: this is cosmetic cleanup on the
+page, not a real network-level ad blocker — for that use an actual content
+blocker extension.
+
+Browsers don't let apps run javascript in tabs by default, so flip one
+setting once (MangaHop will pop up and tell you this if it's missing):
+
+    chrome / brave / edge:  View > Developer > Allow JavaScript from Apple Events
+    safari:                 Settings > Advanced > Show Develop menu,
+                            then Develop > Allow JavaScript from Apple Events
+
 ## How it finds the chapter
 
 Most of these sites run the same handful of stacks, so the URLs are
