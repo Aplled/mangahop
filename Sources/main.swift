@@ -233,6 +233,50 @@ func injectZap(_ b: BrowserApp) -> Bool {
     return applescript(src) != nil
 }
 
+// menu bar glyph — same book-and-arrow as the app icon, drawn as a
+// template image so it follows the menu bar's light/dark tint
+func menuBarIcon() -> NSImage {
+    let img = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+        func page(_ mirror: Bool) -> NSBezierPath {
+            func pt(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+                NSPoint(x: mirror ? 18 - x : x, y: y)
+            }
+            let p = NSBezierPath()
+            p.move(to: pt(8.7, 1.2))
+            p.curve(to: pt(1.2, 3.0), controlPoint1: pt(6.0, 1.2), controlPoint2: pt(3.2, 1.9))
+            p.line(to: pt(1.2, 7.6))
+            p.curve(to: pt(8.7, 5.8), controlPoint1: pt(3.2, 6.5), controlPoint2: pt(6.0, 5.8))
+            p.close()
+            return p
+        }
+        NSColor.black.setFill()
+        page(false).fill()
+        page(true).fill()
+
+        let arc = NSBezierPath()
+        let end = NSPoint(x: 12.6, y: 9.6)
+        arc.move(to: NSPoint(x: 4.4, y: 9.2))
+        arc.curve(to: end, controlPoint1: NSPoint(x: 5.4, y: 15.2), controlPoint2: NSPoint(x: 11.6, y: 15.0))
+        arc.lineWidth = 1.9
+        arc.lineCapStyle = .round
+        NSColor.black.setStroke()
+        arc.stroke()
+
+        let dx: CGFloat = 12.6 - 11.6, dy: CGFloat = 9.6 - 15.0
+        let len = (dx * dx + dy * dy).squareRoot()
+        let d = NSPoint(x: dx / len, y: dy / len)
+        let head = NSBezierPath()
+        head.move(to: NSPoint(x: end.x + d.x * 3.0, y: end.y + d.y * 3.0))
+        head.line(to: NSPoint(x: end.x - d.y * 1.7, y: end.y + d.x * 1.7))
+        head.line(to: NSPoint(x: end.x + d.y * 1.7, y: end.y - d.x * 1.7))
+        head.close()
+        head.fill()
+        return true
+    }
+    img.isTemplate = true
+    return img
+}
+
 // app
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
@@ -256,7 +300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         AppDelegate.shared = self
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "📖"
+        statusItem.button?.image = menuBarIcon()
 
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                  eventKind: UInt32(kEventHotKeyPressed))
