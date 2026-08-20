@@ -56,7 +56,9 @@ setting once (MangaHop will pop up and tell you this if it's missing):
 Also on by default ("Close popup tabs" in the menu): while you're on a manga
 chapter page, any new tab that opens onto a domain none of your other tabs
 use gets closed within about a second. That's the popunder trick these sites
-pull when you click anywhere on the page.
+pull when you click anywhere on the page. Popunders that open on the manga
+site itself and then bounce to the scam domain a moment later get caught
+too — new tabs are watched for about 20 seconds and closed if they leave.
 
 It's careful about what counts as unwanted. Tabs you open yourself are fine —
 the new tab page, cmd+clicking a chapter link (same site, so it's kept),

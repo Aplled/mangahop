@@ -233,10 +233,14 @@ func listTabs(_ b: BrowserApp) -> (active: String, tabs: [(id: Int, url: String)
     tell application "\(b.appName)"
         set out to ""
         set fu to ""
-        if (count of windows) > 0 then set fu to URL of active tab of front window
+        try
+            set fu to URL of active tab of front window
+        end try
         repeat with w in windows
             repeat with t in tabs of w
-                set out to out & (id of t) & "|" & (URL of t) & linefeed
+                try
+                    set out to out & (id of t) & "|" & (URL of t) & linefeed
+                end try
             end repeat
         end repeat
         return fu & linefeed & out
@@ -378,34 +382,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     // user is reading looks like a manga chapter. tabs the user opens
     // themselves (new-tab page, same-site links) are left alone. a tab with
     // no real url yet (popups start as about:blank) is judged on a later
-    // tick once it has one.
+    // tick once it has one. new tabs that pass the check stay on probation
+    // for a while, because popunders often open on the manga site itself and
+    // only then bounce to the scam domain.
     var guardTimer: Timer?
     var seenTabs: Set<Int> = []
+    var probation: [Int: Int] = [:]  // tab id -> ticks of watching left
     var lastActive = ""
     var guardBrowser = ""
 
     func tabGuardTick() {
         guard config.closePopups, recording == nil,
-              let b = activeBrowser(), !b.isSafari,
-              let snap = listTabs(b) else {
+              let b = activeBrowser(), !b.isSafari else {
             guardBrowser = ""
             return
         }
+        guard let snap = listTabs(b) else { return }  // transient error, keep state
+
         let current = Set(snap.tabs.map { $0.id })
-        if guardBrowser != b.bundleID {
+        // prime on first sight of this browser, or when no known tab survived
+        // (browser relaunch recycles tab ids)
+        if guardBrowser != b.bundleID || (!seenTabs.isEmpty && seenTabs.isDisjoint(with: current)) {
             guardBrowser = b.bundleID
             seenTabs = current
+            probation = [:]
             lastActive = snap.active
             return
         }
         seenTabs.formIntersection(current)
+        probation = probation.filter { current.contains($0.key) }
 
         let onChapter = chapterToken(in: snap.active, config: config) != nil
                      || chapterToken(in: lastActive, config: config) != nil
-        let openRoots = Set(snap.tabs.compactMap { t -> String? in
-            guard seenTabs.contains(t.id), let h = URLComponents(string: t.url)?.host else { return nil }
-            return rootDomain(h)
-        })
+
+        // domains vouched for by settled tabs; a tab can't vouch for itself
+        // and tabs still on probation can't vouch for anyone
+        func trustedRoots(excluding id: Int) -> Set<String> {
+            Set(snap.tabs.compactMap { t -> String? in
+                guard t.id != id, seenTabs.contains(t.id), probation[t.id] == nil,
+                      let h = URLComponents(string: t.url)?.host else { return nil }
+                return rootDomain(h)
+            })
+        }
 
         for t in snap.tabs where !seenTabs.contains(t.id) {
             if t.url.isEmpty || t.url == "about:blank" || t.url == "missing value" { continue }
@@ -414,11 +432,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 seenTabs.insert(t.id)  // chrome://newtab and friends — the user's own tab
                 continue
             }
-            if onChapter && !openRoots.contains(rootDomain(host)) {
+            seenTabs.insert(t.id)
+            guard onChapter else { continue }
+            if trustedRoots(excluding: t.id).contains(rootDomain(host)) {
+                probation[t.id] = 16  // looks wanted, but watch for a bounce
+            } else {
                 NSLog("MangaHop: closing popup tab \(t.url)")
                 closeTab(b, id: t.id)
             }
-            seenTabs.insert(t.id)
+        }
+
+        for (id, ticks) in probation {
+            guard let t = snap.tabs.first(where: { $0.id == id }) else { continue }
+            if let comps = URLComponents(string: t.url), let host = comps.host,
+               comps.scheme == "http" || comps.scheme == "https",
+               !trustedRoots(excluding: id).contains(rootDomain(host)) {
+                NSLog("MangaHop: closing redirected tab \(t.url)")
+                closeTab(b, id: id)
+                probation[id] = nil
+            } else {
+                probation[id] = ticks <= 1 ? nil : ticks - 1
+            }
         }
         lastActive = snap.active
     }
