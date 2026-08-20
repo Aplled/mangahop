@@ -1,5 +1,7 @@
 # MangaHop
 
+<img src="assets/icon.png" width="96" align="right">
+
 Small macOS menu bar app for reading manga on aggregator sites without ever
 touching their next/prev buttons, which are usually ad traps or straight up
 redirect scams. Press a hotkey and it bumps the chapter number in the current
